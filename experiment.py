@@ -31,10 +31,16 @@ class DistributionGenerator(torch.Module):
             
         return input
 
+class EmpiricalSampler:
+    def __init__(self, data: torch.Tensor):
+        self.data = data
 
+    def sample(self, n: int):
+        idx = torch.randint(0, len(self.data), (n,))
+        return self.data[idx]
 
     
-def compute_drift(input_sample: torch.tensor, generator: DistributionGenerator, kernel: Callable[[torch.tensor, torch.tensor], float], sample_num: int, empirical_sampler):
+def compute_drift(input_sample: torch.tensor, generator: DistributionGenerator, kernel: Callable[[torch.tensor, torch.tensor], float], sample_num: int, empirical_sampler: EmpiricalSampler):
 
     total_drift = 0.0
     
