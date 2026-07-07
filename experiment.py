@@ -7,7 +7,7 @@ from collections.abc import Callable
 
 class DistributionGenerator(nn.Module):
     def __init__(self, input_dim, output_dim, hidden_layer_num, hidden_layer_dim):
-        super(self).__init__()
+        super(DistributionGenerator, self).__init__()
         
         layers = []
         
@@ -23,11 +23,14 @@ class DistributionGenerator(nn.Module):
             
         layers.append(nn.Linear(hidden_layer_dim, output_dim))
         
-        self.layers = nn.Sequential(**layers)
+        self.layers = nn.Sequential(*layers)
         
     def forward(self, input: torch.tensor):
         
         return self.layers(input)
+    
+    def compute_NTK(self, x: torch.tensor, y:torch.tensor):
+        pass
 
 class EmpiricalSampler:
     def __init__(self, data: torch.Tensor):
@@ -36,6 +39,8 @@ class EmpiricalSampler:
     def sample(self, n: int):
         idx = torch.randint(0, len(self.data), (n,))
         return self.data[idx]
+    
+
 
     
 def compute_drift(input_sample: torch.tensor, generator: DistributionGenerator, kernel: Callable[[torch.tensor, torch.tensor], float], sample_num: int, empirical_sampler: EmpiricalSampler):
@@ -56,21 +61,22 @@ def compute_drift(input_sample: torch.tensor, generator: DistributionGenerator, 
         
         total_drift += kernel(x, y_minus) * kernel(x, y_plus) * (y_plus - y_minus)
         
+        # also empirically compute the normalization consatnts
         z_p += kernel(x, y_plus)
         z_q += kernel(x, y_minus)
         
     z_q = z_q / sample_num
     z_p = z_p /sample_num
-        
+    
     total_drift = total_drift / sample_num
     
     return total_drift / (z_p * z_q)
         
-def iterate(model: DistributionGenerator, sample_num: int, drift_field, kernel_function):
+def iterate(model: DistributionGenerator, sample_num: int, kernel_function: Callable[[torch.tensor, torch.tensor], float], optimizer: torch.optim):
     
     old_model = copy.deepcopy(model)
     
-    optimizer = optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-2)
+    #optimizer = optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-2)
 
     optimizer.zero_grad()
 
@@ -80,7 +86,7 @@ def iterate(model: DistributionGenerator, sample_num: int, drift_field, kernel_f
         sample = torch.randn(model.input_dim)
         
         with torch.no_grad():
-            frozen_target = model(sample) + drift_field(sample, model, kernel_function, 100)
+            frozen_target = model(sample) + compute_drift(sample, model, kernel_function, 100)
         
         total_loss += torch.linalg.norm(model(sample) - frozen_target) ** 2 
         
@@ -92,3 +98,45 @@ def iterate(model: DistributionGenerator, sample_num: int, drift_field, kernel_f
     optimizer.step()
     
     return model, old_model
+
+# experiment: for each iteration, numerically approximate NTK-induced metric 
+
+def gaussian_kernel(x: torch.tensor, y: torch.tensor) -> float:
+
+    return torch.exp(-torch.linalg.norm(x-y)).item()
+
+if __name__ == "__main__":
+    model = DistributionGenerator(30, 100, 10, 50)
+    
+    total_training_step = 50
+    
+    n_squared_samples = 36
+    
+    optimizer = optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-2)
+    
+    for _ in range(total_training_step):
+        
+        t_next, t_curr = iterate(model, 50, gaussian_kernel, optimizer)
+        
+        ## numerically approximate velocity field u_t ≈ f_t+1 - f_t
+        
+        u_t_1, u_t_2 = 0
+        
+        metric = 0.0
+        
+        for __ in range (n_squared_samples):
+            
+            epsilon = torch.randn(model.input_dim)
+            epsilon_2 = torch.randn(model.input_dim)
+            u_t_1 = t_next(epsilon) - t_curr(epsilon)
+            
+            u_t_2 = t_next(epsilon_2) - t_curr(epsilon_2)
+            
+            metric += u_t_1.T * model.compute_NTK(epsilon, epsilon_2) * u_t_2
+            
+        metric = metric / n_squared_samples
+        
+        
+        print(f"At step {_}, NTK metric is approximately {metric}")
+        
+    
