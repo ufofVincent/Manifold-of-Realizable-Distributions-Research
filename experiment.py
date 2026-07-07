@@ -29,8 +29,43 @@ class DistributionGenerator(nn.Module):
         
         return self.layers(input)
     
+    def ping(self):
+        print(list(self.parameters()))
+    
     def compute_NTK(self, x: torch.tensor, y:torch.tensor):
-        pass
+        
+        
+        gradient_1 = torch.autograd.grad(
+            outputs= self.forward(x),
+            inputs = list(self.parameters()),
+            create_graph= True,
+            retain_graph= True
+        )
+        
+        print(gradient_1)
+        
+        gradient_1 = gradient_1[0]
+        
+        gradient_2 = torch.autograd.grad(
+            outputs= self.forward(y),
+            inputs = list(self.parameters()),
+            create_graph= True,
+            retain_graph= True
+        )[0]
+        
+        gradient_1_flattened = torch.cat([g.reshape(-1) for g in gradient_1])
+        gradient_2_flattened= torch.cat([g.reshape(-1) for g in gradient_2])
+        
+        #print(gradient_1_flattened)
+                
+        return torch.outer(gradient_1_flattened,gradient_2_flattened)
+    
+model = DistributionGenerator(3, 1, 5, 10)
+x = torch.randn(3)
+y = torch.randn(3)
+print(model.compute_NTK(x,y))
+
+
 
 class EmpiricalSampler:
     def __init__(self, data: torch.Tensor):
