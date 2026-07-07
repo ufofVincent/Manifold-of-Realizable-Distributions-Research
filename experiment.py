@@ -5,13 +5,13 @@ import copy
 from collections.abc import Callable
 
 
-class DistributionGenerator(torch.Module):
+class DistributionGenerator(nn.Module):
     def __init__(self, input_dim, output_dim, hidden_layer_num, hidden_layer_dim):
         super(self).__init__()
         
-        self.layers = []
+        layers = []
         
-        self.layers.append(nn.linear(input_dim, hidden_layer_dim))
+        layers.append(nn.Linear(input_dim, hidden_layer_dim))
         
         self.layer_num = hidden_layer_num + 2
         
@@ -19,17 +19,15 @@ class DistributionGenerator(torch.Module):
         self.output_dim = output_dim
         
         for _ in range(hidden_layer_num):
-            self.layers.append(nn.linear(hidden_layer_dim, hidden_layer_dim))
+            layers.append(nn.Linear(hidden_layer_dim, hidden_layer_dim))
             
-        self.layers.append(nn.Linear(hidden_layer_dim, output_dim))
+        layers.append(nn.Linear(hidden_layer_dim, output_dim))
+        
+        self.layers = nn.Sequential(**layers)
         
     def forward(self, input: torch.tensor):
         
-        for _ in range(self.layer_num):
-            
-            input = self.layers[_](input)
-            
-        return input
+        return self.layers(input)
 
 class EmpiricalSampler:
     def __init__(self, data: torch.Tensor):
@@ -45,14 +43,14 @@ def compute_drift(input_sample: torch.tensor, generator: DistributionGenerator, 
     total_drift = 0.0
     
     z_q, z_p = 0.0
+    
+    x = generator(input_sample)
 
     for _ in range(sample_num):
         
         
-        eps = torch.rand(generator.input_dim)
+        eps = torch.randn(generator.input_dim)
         y_minus = generator(eps)
-        
-        x = generator(input_sample)
         
         y_plus = empirical_sampler.sample()
         
@@ -81,12 +79,12 @@ def iterate(model: DistributionGenerator, sample_num: int, drift_field, kernel_f
     for _ in range(sample_num):
         sample = torch.randn(model.input_dim)
         
-        with torch.no_grad:
+        with torch.no_grad():
             frozen_target = model(sample) + drift_field(sample, model, kernel_function, 100)
         
         total_loss += torch.linalg.norm(model(sample) - frozen_target) ** 2 
         
-    loss = sum / sample_num
+    loss = total_loss / sample_num
     
     
     loss.backward()
