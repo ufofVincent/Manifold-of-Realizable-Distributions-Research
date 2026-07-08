@@ -61,12 +61,8 @@ class DistributionGenerator(nn.Module):
             
             
         jacobian_1 = torch.stack(jacobians_1)
-        jacobian_2 = torch.stack(jacobians_2)
+        jacobian_2 = torch.stack(jacobians_2)                            
         
-        print(jacobian_1.size())
-        print(jacobian_2.size())
-                            
-                                
         return jacobian_1 @ jacobian_2.T
     
 model = DistributionGenerator(3, 2, 5, 10)
@@ -154,9 +150,23 @@ if __name__ == "__main__":
     
     total_training_step = 50
     
-    n_squared_samples = 36
+    n_samples = 36
+    
+    samples = []
     
     optimizer = optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-2)
+    
+    for i in range(n_samples):
+        samples.append(torch.rand(model.input_dim))
+        
+    ntk_gram = torch.zeros(n_samples, n_samples)
+    
+    for i in range(n_samples):
+        for j in range(n_samples):
+            ntk_gram[i][j] = torch.trace(model.compute_NTK(samples[i],samples[j]))
+            
+    inverse_ntk = torch.inverse(ntk_gram)
+        
     
     for _ in range(total_training_step):
         
@@ -168,17 +178,18 @@ if __name__ == "__main__":
         
         metric = 0.0
         
-        for __ in range (n_squared_samples):
+        for i in range (n_samples):
+            for j in range(n_samples):
             
-            epsilon = torch.randn(model.input_dim)
-            epsilon_2 = torch.randn(model.input_dim)
-            u_t_1 = t_next(epsilon) - t_curr(epsilon)
+                epsilon = samples[i]
+                epsilon_2 = samples[j]
+                u_t_1 = t_next(epsilon) - t_curr(epsilon)
+                
+                u_t_2 = t_next(epsilon_2) - t_curr(epsilon_2)
+                
+                metric += torch.dot(u_t_1, u_t_2) * inverse_ntk[i,j]
             
-            u_t_2 = t_next(epsilon_2) - t_curr(epsilon_2)
-            
-            metric += u_t_1.T * torch.linalg.inv(model.compute_NTK(epsilon, epsilon_2)) * u_t_2
-            
-        metric = metric / n_squared_samples
+        metric = metric / (n_samples ** 2)
         
         
         print(f"At step {_}, NTK metric is approximately {metric}")
