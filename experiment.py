@@ -18,7 +18,7 @@ class DistributionGenerator(nn.Module):
         self.input_dim = input_dim
         self.output_dim = output_dim
         
-        for _ in range(hidden_layer_num):
+        for _ in range(hidden_layer_num - 1):
             layers.append(nn.Linear(hidden_layer_dim, hidden_layer_dim))
             
         layers.append(nn.Linear(hidden_layer_dim, output_dim))
@@ -28,39 +28,48 @@ class DistributionGenerator(nn.Module):
     def forward(self, input: torch.tensor):
         
         return self.layers(input)
-    
-    def ping(self):
-        print(list(self.parameters()))
-    
+        
     def compute_NTK(self, x: torch.tensor, y:torch.tensor):
         
+        jacobians_1 = []
+        jacobians_2 = []
         
-        gradient_1 = torch.autograd.grad(
-            outputs= self.forward(x),
-            inputs = list(self.parameters()),
-            create_graph= True,
-            retain_graph= True
-        )
+        y_1 = self.forward(x)
+        y_2 = self.forward(y)
         
-        print(gradient_1)
         
-        gradient_1 = gradient_1[0]
+        for _ in range (self.output_dim):
+            gradient_1 = torch.autograd.grad(
+                outputs= y_1[_],
+                inputs = list(self.parameters()),
+                create_graph= True,
+                retain_graph= True
+            )
+                                    
+            jacobians_1.append(torch.cat([g.flatten() for g in gradient_1]))
+            
+            
+        for _ in range(self.output_dim):              
+            gradient_2 = torch.autograd.grad(
+                outputs= y_2[_],
+                inputs = list(self.parameters()),
+                create_graph= True,
+                retain_graph= True
+            )
+            
+            jacobians_2.append(torch.cat([g.flatten() for g in gradient_2]))
+            
+            
+        jacobian_1 = torch.stack(jacobians_1)
+        jacobian_2 = torch.stack(jacobians_2)
         
-        gradient_2 = torch.autograd.grad(
-            outputs= self.forward(y),
-            inputs = list(self.parameters()),
-            create_graph= True,
-            retain_graph= True
-        )[0]
-        
-        gradient_1_flattened = torch.cat([g.reshape(-1) for g in gradient_1])
-        gradient_2_flattened= torch.cat([g.reshape(-1) for g in gradient_2])
-        
-        #print(gradient_1_flattened)
-                
-        return torch.outer(gradient_1_flattened,gradient_2_flattened)
+        print(jacobian_1.size())
+        print(jacobian_2.size())
+                            
+                                
+        return jacobian_1 @ jacobian_2.T
     
-model = DistributionGenerator(3, 1, 5, 10)
+model = DistributionGenerator(3, 2, 5, 10)
 x = torch.randn(3)
 y = torch.randn(3)
 print(model.compute_NTK(x,y))
@@ -167,11 +176,13 @@ if __name__ == "__main__":
             
             u_t_2 = t_next(epsilon_2) - t_curr(epsilon_2)
             
-            metric += u_t_1.T * model.compute_NTK(epsilon, epsilon_2) * u_t_2
+            metric += u_t_1.T * torch.linalg.inv(model.compute_NTK(epsilon, epsilon_2)) * u_t_2
             
         metric = metric / n_squared_samples
         
         
         print(f"At step {_}, NTK metric is approximately {metric}")
+        
+        model = t_next
         
     
