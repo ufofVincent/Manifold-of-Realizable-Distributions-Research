@@ -174,16 +174,13 @@ if __name__ == "__main__":
     
     for _ in range(total_training_step):
         
-        
-        
         t_next, t_curr = iterate(model, 50, gaussian_kernel, optimizer)
         
         ## numerically approximate velocity field u_t ≈ f_t+1 - f_t
         
         u_t_1, u_t_2 = 0
         
-        metric = 0.0
-        
+        metric     
         for i in range (n_samples):
             for j in range(n_samples):
             
@@ -194,11 +191,24 @@ if __name__ == "__main__":
                 u_t_2 = t_next(epsilon_2) - t_curr(epsilon_2)
                 
                 metric += torch.dot(u_t_1, u_t_2) * inverse_ntk[i,j]
+                
+        
             
         metric = metric / (n_samples ** 2)
         
+        # now compute L_2 norm of error
         
-        print(f"At step {_}, NTK metric is approximately {metric}")
+        
+        error = 0.0
+        
+        for sample in samples:
+            error += torch.linalg.norm(t_next(sample) - t_curr(sample) - compute_drift(sample, model, gaussian_kernel, 50, sampler))
+        
+        error = error / n_samples
+        
+        
+
+        print(f"At step {_}, NTK metric is approximately {metric}. The actual L2 error is {error}")
         
         model = t_next
         
