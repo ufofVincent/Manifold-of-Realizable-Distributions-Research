@@ -65,10 +65,6 @@ class DistributionGenerator(nn.Module):
         
         return jacobian_1 @ jacobian_2.T
     
-model = DistributionGenerator(3, 2, 5, 10)
-x = torch.randn(3)
-y = torch.randn(3)
-print(model.compute_NTK(x,y))
 
 
 
@@ -84,6 +80,8 @@ class EmpiricalSampler:
 
     
 def compute_drift(input_sample: torch.tensor, generator: DistributionGenerator, kernel: Callable[[torch.tensor, torch.tensor], float], sample_num: int, empirical_sampler: EmpiricalSampler):
+
+    print("entered compute_drift()")
 
     total_drift = 0.0
     
@@ -113,6 +111,8 @@ def compute_drift(input_sample: torch.tensor, generator: DistributionGenerator, 
     return total_drift / (z_p * z_q)
         
 def iterate(model: DistributionGenerator, sample_num: int, kernel_function: Callable[[torch.tensor, torch.tensor], float], optimizer: torch.optim):
+    
+    print("entered iterate()")
     
     old_model = copy.deepcopy(model)
     
@@ -146,11 +146,13 @@ def gaussian_kernel(x: torch.tensor, y: torch.tensor) -> float:
     return torch.exp(-torch.linalg.norm(x-y)).item()
 
 if __name__ == "__main__":
+    
+    
     model = DistributionGenerator(30, 100, 10, 50)
     
     total_training_step = 50
     
-    n_samples = 36
+    n_samples = 5
     
     samples = []
     
@@ -161,14 +163,18 @@ if __name__ == "__main__":
         
     ntk_gram = torch.zeros(n_samples, n_samples)
     
+    
+    
     for i in range(n_samples):
         for j in range(n_samples):
             ntk_gram[i][j] = torch.trace(model.compute_NTK(samples[i],samples[j]))
             
     inverse_ntk = torch.inverse(ntk_gram)
-        
+    
     
     for _ in range(total_training_step):
+        
+        
         
         t_next, t_curr = iterate(model, 50, gaussian_kernel, optimizer)
         
