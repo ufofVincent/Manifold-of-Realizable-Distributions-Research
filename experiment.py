@@ -3,6 +3,9 @@ import torch.nn as nn
 import torch.optim as optim
 import copy
 from collections.abc import Callable
+import math
+import matplotlib.pyplot as plt
+import numpy as np
 
 
 class DistributionGenerator(nn.Module):
@@ -66,26 +69,37 @@ class DistributionGenerator(nn.Module):
         return jacobian_1 @ jacobian_2.T
     
 
+def make_swiss_roll(n: int, output_dim: int, noise: float = 0.1):
+    assert output_dim >= 3
 
+    t = 1.5 * math.pi * (1 + 2 * torch.rand(n))
+    h = 6.0 * torch.rand(n)
 
-class EmpiricalSampler:
-    def __init__(self, data: torch.Tensor):
-        self.data = data
+    data = torch.zeros(n, output_dim)
+    data[:, 0] = t * torch.cos(t)
+    data[:, 1] = h
+    data[:, 2] = t * torch.sin(t)
 
-    def sample(self, n: int):
-        idx = torch.randint(0, len(self.data), (n,))
-        return self.data[idx]
+    data += noise * torch.randn_like(data)
+        
+    return data
+
+def sample_from_distribution(n: int, distribution, output_dim):
     
+    data = distribution(n, output_dim)
+    
+    idx = torch.randint(0,n,(1,))
+    
+    return data[idx]    
 
 
     
-def compute_drift(input_sample: torch.tensor, generator: DistributionGenerator, kernel: Callable[[torch.tensor, torch.tensor], float], sample_num: int, empirical_sampler: EmpiricalSampler):
-
-    print("entered compute_drift()")
+def compute_drift(input_sample: torch.tensor, generator: DistributionGenerator, kernel: Callable[[torch.tensor, torch.tensor], float], sample_num: int, sampler):
 
     total_drift = 0.0
     
-    z_q, z_p = 0.0
+    z_q = 0.0
+    z_p = 0.0
     
     x = generator(input_sample)
 
@@ -95,8 +109,8 @@ def compute_drift(input_sample: torch.tensor, generator: DistributionGenerator, 
         eps = torch.randn(generator.input_dim)
         y_minus = generator(eps)
         
-        y_plus = empirical_sampler.sample()
-        
+        y_plus = sampler(sample_num, make_swiss_roll, generator.output_dim)
+                
         total_drift += kernel(x, y_minus) * kernel(x, y_plus) * (y_plus - y_minus)
         
         # also empirically compute the normalization consatnts
@@ -108,11 +122,13 @@ def compute_drift(input_sample: torch.tensor, generator: DistributionGenerator, 
     
     total_drift = total_drift / sample_num
     
-    return total_drift / (z_p * z_q)
-        
-def iterate(model: DistributionGenerator, sample_num: int, kernel_function: Callable[[torch.tensor, torch.tensor], float], optimizer: torch.optim):
+    total_drift = total_drift / (z_p * z_q)
     
-    print("entered iterate()")
+    
+    return total_drift
+        
+def iterate(model: DistributionGenerator, sample_num: int, kernel_function: Callable[[torch.tensor, torch.tensor], float], optimizer: torch.optim, sampler):
+    
     
     old_model = copy.deepcopy(model)
     
@@ -126,7 +142,7 @@ def iterate(model: DistributionGenerator, sample_num: int, kernel_function: Call
         sample = torch.randn(model.input_dim)
         
         with torch.no_grad():
-            frozen_target = model(sample) + compute_drift(sample, model, kernel_function, 100)
+            frozen_target = model(sample) + compute_drift(sample, model, kernel_function, 100, sampler)
         
         total_loss += torch.linalg.norm(model(sample) - frozen_target) ** 2 
         
@@ -148,6 +164,7 @@ def gaussian_kernel(x: torch.tensor, y: torch.tensor) -> float:
 if __name__ == "__main__":
     
     
+    
     model = DistributionGenerator(30, 100, 10, 50)
     
     total_training_step = 50
@@ -156,31 +173,38 @@ if __name__ == "__main__":
     
     samples = []
     
-    optimizer = optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-2)
+    optimizer = optim.SGD(model.parameters(), lr=1e-3, weight_decay=1e-2)
     
+    
+    # first sample n times
     for i in range(n_samples):
         samples.append(torch.rand(model.input_dim))
         
     ntk_gram = torch.zeros(n_samples, n_samples)
     
     
-    
+    # compute ntk 
     for i in range(n_samples):
         for j in range(n_samples):
             ntk_gram[i][j] = torch.trace(model.compute_NTK(samples[i],samples[j]))
-            
+                        
     inverse_ntk = torch.inverse(ntk_gram)
+        
     
+    metrics = []
+    l2_errors = []
     
     for _ in range(total_training_step):
         
-        t_next, t_curr = iterate(model, 50, gaussian_kernel, optimizer)
+        t_next, t_curr = iterate(model, 50, gaussian_kernel, optimizer, sample_from_distribution)
         
         ## numerically approximate velocity field u_t ≈ f_t+1 - f_t
         
-        u_t_1, u_t_2 = 0
+        u_t_1 = 0
+        u_t_2 = 0
         
-        metric     
+        metric = 0.0
+        
         for i in range (n_samples):
             for j in range(n_samples):
             
@@ -192,24 +216,41 @@ if __name__ == "__main__":
                 
                 metric += torch.dot(u_t_1, u_t_2) * inverse_ntk[i,j]
                 
+                
+                
         
             
         metric = metric / (n_samples ** 2)
         
+        metrics.append(metric.item())
+                
         # now compute L_2 norm of error
         
         
         error = 0.0
         
         for sample in samples:
-            error += torch.linalg.norm(t_next(sample) - t_curr(sample) - compute_drift(sample, model, gaussian_kernel, 50, sampler))
+            drift = compute_drift(sample, model, gaussian_kernel, 50, sample_from_distribution)
+            error += torch.linalg.norm(t_next(sample) - t_curr(sample) - drift)
         
         error = error / n_samples
+        
+        l2_errors.append(error.item())
         
         
 
         print(f"At step {_}, NTK metric is approximately {metric}. The actual L2 error is {error}")
         
+        
         model = t_next
         
+        #recompute NTK
+        
+        for i in range(n_samples):
+            for j in range(n_samples):
+                ntk_gram[i][j] = torch.trace(model.compute_NTK(samples[i],samples[j]))
+                        
+        inverse_ntk = torch.inverse(ntk_gram)
+
     
+    print(metrics, l2_errors)    
