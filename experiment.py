@@ -8,6 +8,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
+
+
 class DistributionGenerator(nn.Module):
     def __init__(self, input_dim, output_dim, hidden_layer_num, hidden_layer_dim):
         super(DistributionGenerator, self).__init__()
@@ -15,6 +17,7 @@ class DistributionGenerator(nn.Module):
         layers = []
         
         layers.append(nn.Linear(input_dim, hidden_layer_dim))
+        layers.append(nn.Sigmoid())
         
         self.layer_num = hidden_layer_num + 2
         
@@ -23,6 +26,7 @@ class DistributionGenerator(nn.Module):
         
         for _ in range(hidden_layer_num - 1):
             layers.append(nn.Linear(hidden_layer_dim, hidden_layer_dim))
+            layers.append(nn.Sigmoid())
             
         layers.append(nn.Linear(hidden_layer_dim, output_dim))
         
@@ -88,8 +92,7 @@ def sample_from_distribution(n: int, distribution, output_dim):
     
     data = distribution(n, output_dim)
     
-    idx = torch.randint(0,n,(1,))
-    
+    idx = torch.randint(0, n, ()).item()
     return data[idx]    
 
 
@@ -163,83 +166,102 @@ def gaussian_kernel(x: torch.tensor, y: torch.tensor) -> float:
 
 if __name__ == "__main__":
     
+    torch.set_default_dtype(torch.float64)
+
     
-    
-    model = DistributionGenerator(30, 100, 10, 50)
+    model = DistributionGenerator(3, 5, 20, 10)
+        
     
     total_training_step = 50
     
-    n_samples = 5
+    n_samples = 30
     
-    samples = []
+    samples = [torch.randn(model.input_dim) for i in range (n_samples)]
     
-    optimizer = optim.SGD(model.parameters(), lr=1e-3, weight_decay=1e-2)
+    optimizer = optim.SGD(model.parameters(), lr=1e-2, weight_decay=0)
     
+            
     
-    # first sample n times
-    for i in range(n_samples):
-        samples.append(torch.rand(model.input_dim))
+
         
-    ntk_gram = torch.zeros(n_samples, n_samples)
-    
-    
     # compute ntk 
+    d = model.output_dim
+
     for i in range(n_samples):
         for j in range(n_samples):
-            ntk_gram[i][j] = torch.trace(model.compute_NTK(samples[i],samples[j]))
-                        
-    inverse_ntk = torch.inverse(ntk_gram)
+            sample_matrix = model.compute_NTK(
+                samples[i],
+                samples[j],
+            )
+
+            ntk_gram = torch.zeros(n_samples * model.output_dim, n_samples * model.output_dim)
+
+            ntk_gram[
+                i * d:(i + 1) * d,
+                j * d:(j + 1) * d,
+            ] = sample_matrix.detach()                        
         
-    
+    ntk_gram = (ntk_gram + ntk_gram.T) / 2
+
+    inverse_ntk = torch.linalg.pinv(
+        ntk_gram,
+        hermitian=True,
+        rtol=1e-10
+    )
+        
     metrics = []
-    l2_errors = []
+    parameter_perturbations = []
     
     for _ in range(total_training_step):
         
         t_next, t_curr = iterate(model, 50, gaussian_kernel, optimizer, sample_from_distribution)
         
+        
+        # first, compute the parameter perturbation between the next model and the first
+        
+        # extract out all parameters then take L2 norm
+        
+        
+        t_next_parameters = list(t_next.parameters())
+        
+        t_next_parameters_new = torch.cat([p.detach().flatten() for p in t_next.parameters()])
+
+        t_curr_parameters_new = torch.cat([p.detach().flatten() for p in t_curr.parameters()])
+                        
+            
+        
+        perturbation = torch.sum((t_next_parameters_new - t_curr_parameters_new) ** 2)
+        
+        parameter_perturbations.append(perturbation.item())
+        
         ## numerically approximate velocity field u_t ≈ f_t+1 - f_t
-        
-        u_t_1 = 0
-        u_t_2 = 0
-        
+                
         metric = 0.0
         
+        stacked_velocities = torch.empty(0)
+        
         for i in range (n_samples):
-            for j in range(n_samples):
             
-                epsilon = samples[i]
-                epsilon_2 = samples[j]
-                u_t_1 = t_next(epsilon) - t_curr(epsilon)
+            epsilon = samples[i]
+            
+            u_t_1 = t_next(epsilon) - t_curr(epsilon)
+            
+            stacked_velocities = torch.cat([stacked_velocities, u_t_1])
                 
-                u_t_2 = t_next(epsilon_2) - t_curr(epsilon_2)
-                
-                metric += torch.dot(u_t_1, u_t_2) * inverse_ntk[i,j]
-                
-                
+            
+        metric = stacked_velocities @ inverse_ntk @ stacked_velocities
                 
         
             
-        metric = metric / (n_samples ** 2)
+        #metric = metric / (n_samples ** 2)
         
         metrics.append(metric.item())
                 
         # now compute L_2 norm of error
-        
-        
-        error = 0.0
-        
-        for sample in samples:
-            drift = compute_drift(sample, model, gaussian_kernel, 50, sample_from_distribution)
-            error += torch.linalg.norm(t_next(sample) - t_curr(sample) - drift)
-        
-        error = error / n_samples
-        
-        l2_errors.append(error.item())
-        
+                
         
 
-        print(f"At step {_}, NTK metric is approximately {metric}. The actual L2 error is {error}")
+        print(f"At step {_}, NTK metric is approximately {metric}. The parameter perturbation L2 norm is {perturbation}")
         
         
         model = t_next
@@ -248,9 +270,23 @@ if __name__ == "__main__":
         
         for i in range(n_samples):
             for j in range(n_samples):
-                ntk_gram[i][j] = torch.trace(model.compute_NTK(samples[i],samples[j]))
-                        
-        inverse_ntk = torch.inverse(ntk_gram)
+                sample_matrix = model.compute_NTK(
+                    samples[i],
+                    samples[j],
+                )
 
-    
-    print(metrics, l2_errors)    
+                ntk_gram[
+                    i * d:(i + 1) * d,
+                    j * d:(j + 1) * d,
+                ] = sample_matrix.detach()                        
+        
+        ntk_gram = (ntk_gram + ntk_gram.T) / 2
+
+        inverse_ntk = torch.linalg.pinv(
+            ntk_gram,
+            hermitian=True,
+            rtol=1e-10
+        )
+
+    print("Metrics for this run", metrics)
+    print("Parameter perturbation L2 norms for this run:", parameter_perturbations)
